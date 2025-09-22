@@ -24,16 +24,15 @@ class TDPrint:
     def __init__(self, ownerComp):
         self.ownerComp = ownerComp
         self._log('TDPrint initialized for', getattr(ownerComp, 'path', ownerComp))
+        try:
+            self._log('Auto-refreshing printer list on init')
+            self._refresh_printer_list()
+        except Exception as e:
+            self._log('Initial printer refresh failed:', e)
 
-    # TouchDesigner calls this to build custom parameters
-    def onSetupParameters(self, page):  # noqa: N802 (TD API name)
-        # Controls
-        page.appendStr('Printer', label='Printer Name')
-        page.appendInt('Copies', label='Copies', default=1, min=1)
-        page.appendToggle('Fittopage', label='Fit To Page', default=True)
-        page.appendPulse('Print', label='Print Now')
-        page.appendToggle('Debug', label='Debug Logs', default=True)
-        self._log('onSetupParameters called; custom params added')
+    # TouchDesigner may call this in some builds; not required. Removed param creation.
+    # def onSetupParameters(self, page):  # noqa: N802 (TD API name)
+    #     return
 
     # TouchDesigner calls this when a pulse parameter is pressed
     def onPulse(self, par):  # noqa: N802 (TD API name)
@@ -41,6 +40,9 @@ class TDPrint:
         if par.name == 'Print':
             self._log('Print pulse received')
             return self.Print()
+        elif par.name == 'Refreshprinters':
+            self._log('Refresh printers pulse received')
+            self._refresh_printer_list()
         return None
 
     def onEnable(self, enable):  # noqa: N802
@@ -53,6 +55,9 @@ class TDPrint:
 
     # Public API: trigger a print job
     def Print(self):  # noqa: N802 (public API)
+        # Use Printerlist menu if set and not (refresh)
+        printerlist_par = getattr(self.ownerComp.par, 'Printerlist', None)
+        printerlist_val = printerlist_par.eval() if printerlist_par else ''
         self._log('Print() invoked')
         top = None
         try:
@@ -86,6 +91,8 @@ class TDPrint:
         # Capture parameters
         printer = getattr(self.ownerComp.par, 'Printer', None)
         printer = printer.eval().strip() if printer else ''
+        if printerlist_val and printerlist_val != '(refresh)':
+            printer = printerlist_val
         copies_par = getattr(self.ownerComp.par, 'Copies', None)
         copies = int(copies_par.eval()) if copies_par else 1
         copies = max(1, copies)
@@ -102,6 +109,69 @@ class TDPrint:
         t.start()
         self._log('Background print thread started')
         return True
+
+    # Parameter auto-creation removed; component expects parameters created manually.
+
+    def _refresh_printer_list(self):
+        # Detect platform and query printers
+        system = platform.system().lower()
+        printers = []
+        try:
+            if 'darwin' in sys.platform or system == 'darwin' or system == 'mac':
+                # macOS: lpstat -p
+                out = subprocess.check_output(['lpstat', '-p'], universal_newlines=True)
+                for line in out.splitlines():
+                    if line.startswith('printer '):
+                        name = line.split()[1]
+                        printers.append(name)
+            elif system == 'windows':
+                # Windows: wmic printer get name
+                try:
+                    out = subprocess.check_output(['wmic', 'printer', 'get', 'name'], universal_newlines=True)
+                    for line in out.splitlines()[1:]:
+                        name = line.strip()
+                        if name:
+                            printers.append(name)
+                except Exception:
+                    # PowerShell fallback
+                    ps = 'Get-Printer | Select-Object -ExpandProperty Name'
+                    out = subprocess.check_output(['powershell', '-Command', ps], universal_newlines=True)
+                    for line in out.splitlines():
+                        name = line.strip()
+                        if name:
+                            printers.append(name)
+            else:
+                # POSIX fallback
+                out = subprocess.check_output(['lpstat', '-p'], universal_newlines=True)
+                for line in out.splitlines():
+                    if line.startswith('printer '):
+                        name = line.split()[1]
+                        printers.append(name)
+        except Exception as e:
+            self._log('Printer list refresh failed:', e)
+        # Always add (refresh) at top
+        menuNames = ['(refresh)'] + printers
+        menuLabels = ['(refresh)'] + printers
+        try:
+            printerlist_par = getattr(self.ownerComp.par, 'Printerlist', None)
+            if printerlist_par:
+                printerlist_par.menuNames = menuNames
+                printerlist_par.menuLabels = menuLabels
+                # Auto-select first detected printer if available
+                if printers:
+                    try:
+                        printerlist_par.val = printers[0]
+                    except Exception:
+                        try:
+                            printerlist_par.menuIndex = 1  # 0 is (refresh)
+                        except Exception:
+                            pass
+                    self._log('Printer list updated; selected:', printers[0])
+                else:
+                    self._log('Printer list updated: no printers found')
+        except Exception as e:
+            self._log('Failed to update Printerlist menu:', e)
+        # Only updates the Printerlist menu; does not launch print thread or extract print parameters
 
     def _save_top_to_temp_png(self, top):
         try:

@@ -12,10 +12,13 @@ except Exception:
 
 
 def onPulse(par):
-    if par.name == 'Print':
-        try:
+    try:
+        if par.name == 'Print':
             debug('[TDPrint] Parameter Execute: Print pulse caught on {}'.format(par.owner.path))
             op('..').ext.TDPrint.Print()
-        except Exception as e:
-            debug('[TDPrint] Parameter Execute error: {}'.format(e))
+        elif par.name == 'Refreshprinters':
+            debug('[TDPrint] Parameter Execute: Refresh printers pulse on {}'.format(par.owner.path))
+            op('..').ext.TDPrint._refresh_printer_list()
+    except Exception as e:
+        debug('[TDPrint] Parameter Execute error: {}'.format(e))
     return
