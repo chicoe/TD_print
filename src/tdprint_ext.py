@@ -98,12 +98,18 @@ class TDPrint:
         copies = max(1, copies)
         fit_par = getattr(self.ownerComp.par, 'Fittopage', None)
         fit_to_page = bool(fit_par.eval()) if fit_par else True
-        self._log('Print settings → printer:', repr(printer), 'copies:', copies, 'fit_to_page:', fit_to_page)
+        fill_par = getattr(self.ownerComp.par, 'Filltopage', None)
+        fill_to_page = bool(fill_par.eval()) if fill_par else False
+        orient_par = getattr(self.ownerComp.par, 'Orientation', None)
+        orientation = orient_par.eval().strip().lower() if orient_par else 'auto'
+        if orientation not in ('auto', 'portrait', 'landscape'):
+            orientation = 'auto'
+        self._log('Print settings → printer:', repr(printer), 'copies:', copies, 'fit_to_page:', fit_to_page, 'fill_to_page:', fill_to_page, 'orientation:', orientation)
 
         # Run the OS print in a background thread to avoid blocking TD
         t = threading.Thread(
             target=self._print_worker,
-            args=(tmp_path, printer, copies, fit_to_page, self._debug_enabled()),
+            args=(tmp_path, printer, copies, fit_to_page, fill_to_page, orientation, self._debug_enabled()),
             daemon=True,
         )
         t.start()
@@ -192,17 +198,17 @@ class TDPrint:
             self._log_exc('TOP save exception')
             return None
 
-    def _print_worker(self, image_path, printer, copies, fit_to_page, debug_enabled):
+    def _print_worker(self, image_path, printer, copies, fit_to_page, fill_to_page, orientation, debug_enabled):
         try:
             system = platform.system().lower()
-            self._tlog(debug_enabled, 'Print worker on system:', system)
+            self._tlog(debug_enabled, 'Print worker on system:', system, '| settings:', {'fit': fit_to_page, 'fill': fill_to_page, 'orientation': orientation})
             if 'darwin' in sys.platform or system == 'darwin' or system == 'mac':
-                self._print_macos(image_path, printer, copies, fit_to_page, debug_enabled)
+                self._print_macos(image_path, printer, copies, fit_to_page, fill_to_page, orientation, debug_enabled)
             elif system == 'windows':
-                self._print_windows(image_path, printer, copies, debug_enabled)
+                self._print_windows(image_path, printer, copies, orientation, debug_enabled)
             else:
                 # Fallback to CUPS if available
-                self._print_posix(image_path, printer, copies, fit_to_page, debug_enabled)
+                self._print_posix(image_path, printer, copies, fit_to_page, fill_to_page, orientation, debug_enabled)
         finally:
             # Allow a short delay to ensure the printing app has opened the file
             time.sleep(2.0)
@@ -212,18 +218,23 @@ class TDPrint:
             except Exception:
                 self._tlog(debug_enabled, 'Could not delete temporary file (might be in use):', image_path)
 
-    def _print_macos(self, image_path, printer, copies, fit_to_page, debug_enabled):
+    def _print_macos(self, image_path, printer, copies, fit_to_page, fill_to_page, orientation, debug_enabled):
         # Use CUPS lp command; silent, no dialogs
         base_cmd = ['lp']
         if printer:
             base_cmd += ['-d', printer]
         if copies and copies > 1:
             base_cmd += ['-n', str(copies)]
-        # Fit-to-page option; ignore if not desired
-        if fit_to_page:
+        # Scaling options
+        if fill_to_page:
+            base_cmd += ['-o', 'print-scaling=fill']
+        elif fit_to_page:
             base_cmd += ['-o', 'fit-to-page']
-        # Auto-rotate to best fit
-        base_cmd += ['-o', 'landscape=false']
+        # Orientation options (auto = no option)
+        if orientation == 'landscape':
+            base_cmd += ['-o', 'landscape']
+        elif orientation == 'portrait':
+            base_cmd += ['-o', 'landscape=false']
         cmd = base_cmd + [image_path]
         self._tlog(debug_enabled, 'macOS print command:', cmd)
         try:
@@ -233,14 +244,16 @@ class TDPrint:
             self._tlog(debug_enabled, 'macOS print failed:', e)
             self._tlog_exc(debug_enabled, 'macOS print exception')
 
-    def _print_posix(self, image_path, printer, copies, fit_to_page, debug_enabled):
+    def _print_posix(self, image_path, printer, copies, fit_to_page, fill_to_page, orientation, debug_enabled):
         # Generic POSIX path using lp
-        self._print_macos(image_path, printer, copies, fit_to_page, debug_enabled)
+        self._print_macos(image_path, printer, copies, fit_to_page, fill_to_page, orientation, debug_enabled)
 
-    def _print_windows(self, image_path, printer, copies, debug_enabled):
+    def _print_windows(self, image_path, printer, copies, orientation, debug_enabled):
         # Prefer mspaint silent printing. Syntax:
         # mspaint /pt <file> [printer]
         # Copies are handled by repeating the command.
+        if orientation in ('portrait', 'landscape'):
+            self._tlog(debug_enabled, 'Windows: orientation cannot be set via mspaint; using printer defaults. Requested:', orientation)
         def run_once():
             try:
                 if printer:
